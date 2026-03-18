@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"crypto/sha1" //nolint:gosec // G505: Blocklisted import crypto/sha1: weak cryptographic primitive (gosec), this is not a cryptographic use case
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,12 +20,15 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
-	"github.com/commercetools/telefonistka/internal/pkg/argocd"
-	cfg "github.com/commercetools/telefonistka/internal/pkg/configuration"
-	prom "github.com/commercetools/telefonistka/internal/pkg/prometheus"
 	"github.com/google/go-github/v62/github"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/nao1215/markdown"
+	"github.com/schubergphilis/container-platform-telefonistka/internal/pkg/argocd"
+	cfg "github.com/schubergphilis/container-platform-telefonistka/internal/pkg/configuration"
+	"github.com/schubergphilis/container-platform-telefonistka/internal/pkg/gitprovider"
+	ghprovider "github.com/schubergphilis/container-platform-telefonistka/internal/pkg/gitprovider/github"
+	prom "github.com/schubergphilis/container-platform-telefonistka/internal/pkg/prometheus"
+	promlib "github.com/schubergphilis/container-platform-telefonistka/internal/pkg/promotion"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/exp/maps"
 )
@@ -44,10 +44,7 @@ type DiffCommentData struct {
 	BranchName                string
 }
 
-type promotionInstanceMetaData struct {
-	SourcePath  string   `json:"sourcePath"`
-	TargetPaths []string `json:"targetPaths"`
-}
+type promotionInstanceMetaData = promlib.PromotionPathMetadata
 
 type GhPrClientDetails struct {
 	GhClientPair *GhClientPair
@@ -66,19 +63,11 @@ type GhPrClientDetails struct {
 	PrMetadata    prMetadata
 }
 
-type prMetadata struct {
-	OriginalPrAuthor          string                            `json:"originalPrAuthor"`
-	OriginalPrNumber          int                               `json:"originalPrNumber"`
-	PromotedPaths             []string                          `json:"promotedPaths"`
-	PreviousPromotionMetadata map[int]promotionInstanceMetaData `json:"previousPromotionPaths"`
-}
+type prMetadata = promlib.PrMetadata
 
-func (pm prMetadata) serialize() (string, error) {
-	pmJson, err := json.Marshal(pm)
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(pmJson), nil
+// toProvider wraps the legacy GhClientPair into the GitProvider interface.
+func (g *GhPrClientDetails) toProvider() gitprovider.GitProvider {
+	return ghprovider.NewGitHubProviderFromClients(g.GhClientPair.v3Client, g.GhClientPair.v4Client)
 }
 
 func (ghPrClientDetails *GhPrClientDetails) getPrMetadata(prBody string) {
@@ -178,23 +167,35 @@ func eventToHandle(eventPayload *github.PullRequestEvent) (event string, ok bool
 
 func handleShowPlanPREvent(ctx context.Context, ghPrClientDetails GhPrClientDetails, eventPayload *github.PullRequestEvent) error {
 	ghPrClientDetails.PrLogger.Infoln("Found show-plan label, posting plan")
-	defaultBranch, _ := ghPrClientDetails.GetDefaultBranch()
+	defaultBranch, err := ghPrClientDetails.GetDefaultBranch()
+	if err != nil {
+		return fmt.Errorf("get default branch: %w", err)
+	}
 	config, err := GetInRepoConfig(ghPrClientDetails, defaultBranch)
 	if err != nil {
 		return fmt.Errorf("get in-repo configuration: %w", err)
 	}
-	promotions, _ := GeneratePromotionPlan(ghPrClientDetails, config, *eventPayload.PullRequest.Head.Ref)
+	promotions, err := GeneratePromotionPlan(ghPrClientDetails, config, *eventPayload.PullRequest.Head.Ref)
+	if err != nil {
+		return fmt.Errorf("generate promotion plan: %w", err)
+	}
 	commentPlanInPR(ghPrClientDetails, promotions)
 	return nil
 }
 
 func handleChangedPREvent(ctx context.Context, mainGithubClientPair GhClientPair, ghPrClientDetails GhPrClientDetails, prNumber int, prLabels []*github.Label) error {
-	botIdentity, _ := GetBotGhIdentity(mainGithubClientPair.v4Client, ctx)
-	err := MimizeStalePrComments(ghPrClientDetails, mainGithubClientPair.v4Client, botIdentity)
+	botIdentity, err := GetBotGhIdentity(mainGithubClientPair.v4Client, ctx)
 	if err != nil {
-		return fmt.Errorf("minimizing stale PR comments: %w", err)
+		ghPrClientDetails.PrLogger.Warnf("Failed to get bot identity: %v (comment minimization will be skipped)", err)
+	} else {
+		if err := MimizeStalePrComments(ghPrClientDetails, mainGithubClientPair.v4Client, botIdentity); err != nil {
+			return fmt.Errorf("minimizing stale PR comments: %w", err)
+		}
 	}
-	defaultBranch, _ := ghPrClientDetails.GetDefaultBranch()
+	defaultBranch, err := ghPrClientDetails.GetDefaultBranch()
+	if err != nil {
+		return fmt.Errorf("get default branch: %w", err)
+	}
 	config, err := GetInRepoConfig(ghPrClientDetails, defaultBranch)
 	if err != nil {
 		return fmt.Errorf("get in-repo configuration: %w", err)
@@ -387,14 +388,15 @@ func generateArgoCdDiffComments(diffCommentData DiffCommentData, githubCommentMa
 	return comments, nil
 }
 
-// ReciveEventFile this one is similar to ReciveWebhook but it's used for CLI triggering, i  simulates a webhook event to use the same code path as the webhook handler.
-func ReciveEventFile(eventType string, eventFilePath string, mainGhClientCache *lru.Cache[string, GhClientPair], prApproverGhClientCache *lru.Cache[string, GhClientPair]) {
+// ReceiveEventFile this one is similar to ReceiveWebhook but it's used for CLI triggering, i  simulates a webhook event to use the same code path as the webhook handler.
+func ReceiveEventFile(eventType string, eventFilePath string, mainGhClientCache *lru.Cache[string, GhClientPair], prApproverGhClientCache *lru.Cache[string, GhClientPair]) {
 	log.Infof("Event type: %s", eventType)
-	log.Infof("Proccesing file: %s", eventFilePath)
+	log.Infof("Processing file: %s", eventFilePath)
 
 	payload, err := os.ReadFile(eventFilePath)
 	if err != nil {
-		panic(err)
+		log.Errorf("Failed to read event file %s: %v", eventFilePath, err)
+		return
 	}
 	eventPayloadInterface, err := github.ParseWebHook(eventType, payload)
 	if err != nil {
@@ -410,8 +412,8 @@ func ReciveEventFile(eventType string, eventFilePath string, mainGhClientCache *
 	handleEvent(eventPayloadInterface, mainGhClientCache, prApproverGhClientCache, r, payload)
 }
 
-// ReciveWebhook is the main entry point for the webhook handling it starts parases the webhook payload and start a thread to handle the event success/failure are dependant on the payload parsing only
-func ReciveWebhook(r *http.Request, mainGhClientCache *lru.Cache[string, GhClientPair], prApproverGhClientCache *lru.Cache[string, GhClientPair], githubWebhookSecret []byte) error {
+// ReceiveWebhook is the main entry point for the webhook handling it starts parases the webhook payload and start a thread to handle the event success/failure are dependant on the payload parsing only
+func ReceiveWebhook(r *http.Request, mainGhClientCache *lru.Cache[string, GhClientPair], prApproverGhClientCache *lru.Cache[string, GhClientPair], githubWebhookSecret []byte) error {
 	payload, err := github.ValidatePayload(r, githubWebhookSecret)
 	if err != nil {
 		log.Errorf("error reading request body: err=%s\n", err)
@@ -435,7 +437,8 @@ func ReciveWebhook(r *http.Request, mainGhClientCache *lru.Cache[string, GhClien
 func handleEvent(eventPayloadInterface interface{}, mainGhClientCache *lru.Cache[string, GhClientPair], prApproverGhClientCache *lru.Cache[string, GhClientPair], r *http.Request, payload []byte) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Errorf("Recovered: %v", r)
+			log.Errorf("Recovered from panic in handleEvent: %v", r)
+			prom.InstrumentWebhookEvent("github", fmt.Sprintf("%T", eventPayloadInterface), "panic")
 		}
 	}()
 
@@ -562,7 +565,11 @@ func analyzeCommentUpdateCheckBox(newBody string, oldBody string, checkboxIdenti
 }
 
 func isSyncFromBranchAllowedForThisPath(allowedPathRegex string, path string) bool {
-	allowedPathsRegex := regexp.MustCompile(allowedPathRegex)
+	allowedPathsRegex, err := regexp.Compile(allowedPathRegex)
+	if err != nil {
+		log.Errorf("Invalid allowSyncfromBranchPathRegex %q: %v", allowedPathRegex, err)
+		return false
+	}
 	return allowedPathsRegex.MatchString(path)
 }
 
@@ -689,7 +696,7 @@ func BumpVersion(ghPrClientDetails GhPrClientDetails, defaultBranch string, file
 		ghPrClientDetails.PrLogger.Errorf("Commit creation failed: err=%v", err)
 		return err
 	}
-	newBranchRef, err := createBranch(ghPrClientDetails, commit, "artifact_version_bump/"+triggeringRepo+"/"+triggeringRepoSHA) // TODO figure out branch name!!!!
+	newBranchRef, err := createBranch(ghPrClientDetails, commit, "artifact_version_bump/"+triggeringRepo+"/"+triggeringRepoSHA) // TODO: generate a more descriptive branch name
 	if err != nil {
 		ghPrClientDetails.PrLogger.Errorf("Branch creation failed: err=%v", err)
 		return err
@@ -737,7 +744,7 @@ func handleMergedPrEvent(ghPrClientDetails GhPrClientDetails, prApproverGithubCl
 
 			var treeEntries []*github.TreeEntry
 			for trgt, src := range promotion.ComputedSyncPaths {
-				err = GenerateSyncTreeEntriesForCommit(&treeEntries, ghPrClientDetails, src, trgt, defaultBranch)
+				err = GenerateSyncTreeEntriesForCommit(&treeEntries, ghPrClientDetails, src, trgt, defaultBranch, promotion.Metadata.BlockList)
 				if err != nil {
 					ghPrClientDetails.PrLogger.Errorf("Failed to generate treeEntries for %s > %s,  err=%v", src, trgt, err)
 				} else {
@@ -756,7 +763,7 @@ func handleMergedPrEvent(ghPrClientDetails GhPrClientDetails, prApproverGithubCl
 				return err
 			}
 
-			newBranchName := generateSafePromotionBranchName(ghPrClientDetails.PrNumber, ghPrClientDetails.Ref, promotion.Metadata.TargetPaths)
+			newBranchName := promlib.GenerateSafePromotionBranchName(ghPrClientDetails.PrNumber, ghPrClientDetails.Ref, promotion.Metadata.TargetPaths)
 
 			newBranchRef, err := createBranch(ghPrClientDetails, commit, newBranchName)
 			if err != nil {
@@ -834,25 +841,6 @@ func handleMergedPrEvent(ghPrClientDetails GhPrClientDetails, prApproverGithubCl
 	return err
 }
 
-// Creating a unique branch name based on the PR number, PR ref and the promotion target paths
-// Max length of branch name is 250 characters
-func generateSafePromotionBranchName(prNumber int, originalBranchName string, targetPaths []string) string {
-	targetPathsBa := []byte(strings.Join(targetPaths, "_"))
-	hasher := sha1.New() //nolint:gosec // G505: Blocklisted import crypto/sha1: weak cryptographic primitive (gosec), this is not a cryptographic use case
-	hasher.Write(targetPathsBa)
-	uniqBranchNameSuffix := firstN(hex.EncodeToString(hasher.Sum(nil)), 12)
-	safeOriginalBranchName := firstN(strings.ReplaceAll(originalBranchName, "/", "-"), 200)
-	return fmt.Sprintf("promotions/%v-%v-%v", prNumber, safeOriginalBranchName, uniqBranchNameSuffix)
-}
-
-func firstN(str string, n int) string {
-	v := []rune(str)
-	if n >= len(v) {
-		return str
-	}
-	return string(v[:n])
-}
-
 func MergePr(details GhPrClientDetails, number int) error {
 	operation := func() error {
 		err := tryMergePR(details, number)
@@ -885,16 +873,7 @@ func tryMergePR(details GhPrClientDetails, number int) error {
 }
 
 func isMergeErrorRetryable(errMessage string) bool {
-	return strings.Contains(errMessage, "405") && strings.Contains(errMessage, "try the merge again")
-}
-
-func (pm *prMetadata) DeSerialize(s string) error {
-	decoded, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return err
-	}
-	err = json.Unmarshal(decoded, pm)
-	return err
+	return promlib.IsMergeErrorRetryable(errMessage)
 }
 
 func (p GhPrClientDetails) CommentOnPr(commentBody string) error {
@@ -958,7 +937,6 @@ func (p *GhPrClientDetails) ToggleCommitStatus(context string, user string) erro
 }
 
 func SetCommitStatus(ghPrClientDetails GhPrClientDetails, state string) {
-	// TODO change all these values
 	tcontext := "telefonistka"
 	avatarURL := "https://avatars.githubusercontent.com/u/1616153?s=64"
 	description := "Telefonistka GitOps Bot"
@@ -1076,15 +1054,57 @@ func getDirecotyGitObjectSha(ghPrClientDetails GhPrClientDetails, dirPath string
 	return direcotyGitObjectSha, nil
 }
 
-func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClientDetails GhPrClientDetails, sourcePath string, targetPath string, defaultBranch string) error {
+func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClientDetails GhPrClientDetails, sourcePath string, targetPath string, defaultBranch string, blockList []string) error {
 	sourcePathSHA, err := getDirecotyGitObjectSha(ghPrClientDetails, sourcePath, defaultBranch)
 
 	if sourcePathSHA == "" {
 		ghPrClientDetails.PrLogger.Infoln("Source directory wasn't found, assuming a deletion PR")
-		err := generateDeletionTreeEntries(&ghPrClientDetails, &targetPath, &defaultBranch, treeEntries)
+		err := generateDeletionTreeEntriesWithBlockList(&ghPrClientDetails, &targetPath, &defaultBranch, treeEntries, blockList)
 		if err != nil {
 			ghPrClientDetails.PrLogger.Errorf("Failed to build deletion tree: err=%s\n", err)
 			return err
+		}
+	} else if len(blockList) > 0 {
+		// When blockList is present, we cannot use the tree SHA shortcut because it would
+		// overwrite blocked files. Instead, create individual file tree entries.
+		sourceFilesSHAs := make(map[string]string)
+		targetFilesSHAs := make(map[string]string)
+		generateFlatMapfromFileTree(&ghPrClientDetails, &sourcePath, &sourcePath, &defaultBranch, sourceFilesSHAs)
+		generateFlatMapfromFileTree(&ghPrClientDetails, &targetPath, &targetPath, &defaultBranch, targetFilesSHAs)
+
+		// Create/update non-blocked source files in target
+		for filename, sha := range sourceFilesSHAs {
+			if promlib.IsFileBlocked(filename, blockList) {
+				ghPrClientDetails.PrLogger.Debugf("Skipping blocked file %s (matched blockList pattern)", filename)
+				continue
+			}
+			fileSHA := sha
+			syncTreeEntry := github.TreeEntry{
+				Path: github.String(targetPath + "/" + filename),
+				Mode: github.String("100644"),
+				Type: github.String("blob"),
+				SHA:  github.String(fileSHA),
+			}
+			*treeEntries = append(*treeEntries, &syncTreeEntry)
+		}
+
+		// Delete non-blocked target files not present in source
+		for filename := range targetFilesSHAs {
+			if _, found := sourceFilesSHAs[filename]; !found {
+				if promlib.IsFileBlocked(filename, blockList) {
+					ghPrClientDetails.PrLogger.Debugf("Skipping deletion of blocked file %s (matched blockList pattern)", filename)
+					continue
+				}
+				ghPrClientDetails.PrLogger.Debugf("%s -- was NOT found on %s, marking as a deletion!", filename, sourcePath)
+				fileDeleteTreeEntry := github.TreeEntry{
+					Path:    github.String(targetPath + "/" + filename),
+					Mode:    github.String("100644"),
+					Type:    github.String("blob"),
+					SHA:     nil,
+					Content: nil,
+				}
+				*treeEntries = append(*treeEntries, &fileDeleteTreeEntry)
+			}
 		}
 	} else {
 		syncTreeEntry := github.TreeEntry{
@@ -1095,7 +1115,7 @@ func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClie
 		}
 		*treeEntries = append(*treeEntries, &syncTreeEntry)
 
-		// Aperntly... the way we sync directories(set the target dir git tree object SHA) doesn't delete files!!!! GH just "merges" the old and new tree objects.
+		// Apparently the way we sync directories (set the target dir git tree object SHA) doesn't delete files. GH just "merges" the old and new tree objects.
 		// So for now, I'll just go over all the files and add explicitly add  delete tree  entries  :(
 		// TODO compare sourcePath targetPath Git object SHA to avoid costly tree compare where possible?
 		sourceFilesSHAs := make(map[string]string)
@@ -1119,6 +1139,51 @@ func GenerateSyncTreeEntriesForCommit(treeEntries *[]*github.TreeEntry, ghPrClie
 	}
 
 	return err
+}
+
+// generateDeletionTreeEntriesWithBlockList is like generateDeletionTreeEntries but skips blocked files.
+func generateDeletionTreeEntriesWithBlockList(ghPrClientDetails *GhPrClientDetails, path *string, branch *string, treeEntries *[]*github.TreeEntry, blockList []string) error {
+	if len(blockList) == 0 {
+		return generateDeletionTreeEntries(ghPrClientDetails, path, branch, treeEntries)
+	}
+	// Build flat file map then filter
+	filesSHAs := make(map[string]string)
+	rootPath := *path
+	generateFlatMapfromFileTree(ghPrClientDetails, path, &rootPath, branch, filesSHAs)
+	for filename := range filesSHAs {
+		if promlib.IsFileBlocked(filename, blockList) {
+			ghPrClientDetails.PrLogger.Debugf("Skipping deletion of blocked file %s (matched blockList pattern)", filename)
+			continue
+		}
+		treeEntry := github.TreeEntry{
+			Path:    github.String(*path + "/" + filename),
+			Mode:    github.String("100644"),
+			Type:    github.String("blob"),
+			SHA:     nil,
+			Content: nil,
+		}
+		*treeEntries = append(*treeEntries, &treeEntry)
+	}
+	return nil
+}
+
+func generateFlatMapfromFileTree(ghPrClientDetails *GhPrClientDetails, workingPath *string, rootPath *string, branch *string, listOfFiles map[string]string) {
+	getContentOpts := &github.RepositoryContentGetOptions{
+		Ref: *branch,
+	}
+	_, directoryContent, resp, _ := ghPrClientDetails.GhClientPair.v3Client.Repositories.GetContents(ghPrClientDetails.Ctx, ghPrClientDetails.Owner, ghPrClientDetails.Repo, *workingPath, getContentOpts)
+	prom.InstrumentGhCall(resp)
+	for _, elementInDir := range directoryContent {
+		switch *elementInDir.Type {
+		case "file":
+			relativeName := strings.TrimPrefix(*elementInDir.Path, *rootPath+"/")
+			listOfFiles[relativeName] = *elementInDir.SHA
+		case "dir":
+			generateFlatMapfromFileTree(ghPrClientDetails, elementInDir.Path, rootPath, branch, listOfFiles)
+		default:
+			ghPrClientDetails.PrLogger.Infof("Ignoring type %s for path %s", *elementInDir.Type, *elementInDir.Path)
+		}
+	}
 }
 
 func createCommit(ghPrClientDetails GhPrClientDetails, treeEntries []*github.TreeEntry, defaultBranch string, commitMsg string) (*github.Commit, error) {
@@ -1219,7 +1284,7 @@ func generatePromotionPrBody(ghPrClientDetails GhPrClientDetails, components str
 
 	newPrBody = prBody(keys, newPrMetadata, newPrBody, promotionSkipPaths)
 
-	prMetadataString, _ := newPrMetadata.serialize()
+	prMetadataString, _ := newPrMetadata.Serialize()
 
 	newPrBody = newPrBody + "\n<!--|Telefonistka data, do not delete|" + prMetadataString + "|-->"
 
@@ -1352,7 +1417,7 @@ func createPrObject(ghPrClientDetails GhPrClientDetails, newBranchRef string, ne
 		ghPrClientDetails.PrLogger.Debugf(" %s was set as assignee on PR", assignee)
 	}
 
-	return pull, nil // TODO
+	return pull, nil
 }
 
 func ApprovePr(approverClient *github.Client, ghPrClientDetails GhPrClientDetails, prNumber *int) error {
@@ -1371,16 +1436,8 @@ func ApprovePr(approverClient *github.Client, ghPrClientDetails GhPrClientDetail
 }
 
 func GetInRepoConfig(ghPrClientDetails GhPrClientDetails, defaultBranch string) (*cfg.Config, error) {
-	inRepoConfigFileContentString, _, err := GetFileContent(ghPrClientDetails, defaultBranch, "telefonistka.yaml")
-	if err != nil {
-		ghPrClientDetails.PrLogger.Errorf("Could not get in-repo configuration: err=%s\n", err)
-		inRepoConfigFileContentString = ""
-	}
-	c, err := cfg.ParseConfigFromYaml(inRepoConfigFileContentString)
-	if err != nil {
-		ghPrClientDetails.PrLogger.Errorf("Failed to parse configuration: err=%s\n", err)
-	}
-	return c, err
+	return promlib.GetRepoConfig(ghPrClientDetails.Ctx, ghPrClientDetails.toProvider(),
+		ghPrClientDetails.Owner, ghPrClientDetails.Repo, defaultBranch, ghPrClientDetails.PrLogger)
 }
 
 func GetFileContent(ghPrClientDetails GhPrClientDetails, branch string, filePath string) (string, int, error) {
@@ -1410,7 +1467,7 @@ func GetFileContent(ghPrClientDetails GhPrClientDetails, branch string, filePath
 // it returns a default URL.
 // passed parameter commitTime can be used in the template as .CommitTime
 func commitStatusTargetURL(commitTime time.Time, tmplFile string) string {
-	const targetURL string = "https://github.com/commercetools/telefonistka"
+	const targetURL string = "https://github.com/schubergphilis/container-platform-telefonistka"
 
 	tmplName := filepath.Base(tmplFile)
 

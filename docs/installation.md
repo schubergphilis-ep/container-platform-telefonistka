@@ -21,7 +21,7 @@ jobs:
   telefonistka:
     runs-on: ubuntu-latest
     steps:
-      - uses:  Oded-B/telefonistka-action@main
+      - uses: schubergphilis/container-platform-telefonistka-action@main  # upstream: Oded-B/telefonistka-action@main
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 ```

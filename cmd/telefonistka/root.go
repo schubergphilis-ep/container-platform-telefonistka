@@ -12,9 +12,9 @@ var rootCmd = &cobra.Command{
 	Use:     "telefonistka",
 	Version: "0.0.0",
 	Short:   "telefonistka - Safe and Controlled GitOps Promotion Across Environments/Failure-Domains",
-	Long: `Telefonistka is a Github webhook server/CLI tool that facilitates change promotion across environments/failure domains in Infrastructure as Code GitOps repos
+	Long: `Telefonistka is a GitHub/GitLab webhook server/CLI tool that facilitates change promotion across environments/failure domains in Infrastructure as Code GitOps repos
 
-see https://github.com/commercetools/telefonistka`,
+see https://github.com/schubergphilis/container-platform-telefonistka`,
 	Run: func(cmd *cobra.Command, args []string) {
 	},
 }

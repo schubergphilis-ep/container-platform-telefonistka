@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
-	"github.com/commercetools/telefonistka/internal/pkg/configuration"
-	prom "github.com/commercetools/telefonistka/internal/pkg/prometheus"
 	"github.com/google/go-github/v62/github"
+	"github.com/schubergphilis/container-platform-telefonistka/internal/pkg/configuration"
+	prom "github.com/schubergphilis/container-platform-telefonistka/internal/pkg/prometheus"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/exp/maps"
 )
@@ -36,14 +37,27 @@ func generateListOfChangedFiles(eventPayload *github.PushEvent) []string {
 }
 
 func generateListOfEndpoints(listOfChangedFiles []string, config *configuration.Config) []string {
+	// Pre-compile regexes once to avoid recompiling per file (prevents ReDoS amplification).
+	type compiledEndpointRegex struct {
+		regex        *regexp.Regexp
+		replacements []string
+	}
+	var compiled []compiledEndpointRegex
+	for _, r := range config.WebhookEndpointRegexs {
+		re, err := regexp.Compile(r.Expression)
+		if err != nil {
+			log.Errorf("Invalid webhook endpoint regex %q: %v, skipping", r.Expression, err)
+			continue
+		}
+		compiled = append(compiled, compiledEndpointRegex{regex: re, replacements: r.Replacements})
+	}
+
 	endpoints := map[string]bool{} // using map for uniqueness
 	for _, file := range listOfChangedFiles {
-		for _, regex := range config.WebhookEndpointRegexs {
-			m := regexp.MustCompile(regex.Expression)
-
-			if m.MatchString(file) {
-				for _, replacement := range regex.Replacements {
-					endpoints[m.ReplaceAllString(file, replacement)] = true
+		for _, cr := range compiled {
+			if cr.regex.MatchString(file) {
+				for _, replacement := range cr.replacements {
+					endpoints[cr.regex.ReplaceAllString(file, replacement)] = true
 				}
 				break
 			}
@@ -85,7 +99,7 @@ func proxyRequest(ctx context.Context, skipTLSVerify bool, originalHttpRequest *
 	respBody, err := io.ReadAll(resp.Body)
 
 	if !strings.HasPrefix(resp.Status, "2") {
-		log.Errorf("Got non 2XX HTTP status from  %s: status=%s body=%v", endpoint, resp.Status, body)
+		log.Errorf("Got non 2XX HTTP status from %s: status=%s responseLength=%d", endpoint, resp.Status, len(respBody))
 	}
 
 	if err != nil {
@@ -110,25 +124,24 @@ func handlePushEvent(ctx context.Context, eventPayload *github.PushEvent, httpRe
 		config, _ := GetInRepoConfig(ghPrClientDetails, *defaultBranch)
 		endpoints := generateListOfEndpoints(listOfChangedFiles, config)
 
-		// Create a channel to receive responses from the goroutines
-		responses := make(chan string)
-
-		// Use a buffered channel with the same size as the number of endpoints
-		// to prevent goroutines from blocking in case of slow endpoints
-		results := make(chan string, len(endpoints))
+		// Buffered channel so goroutines never block even if this function returns early.
+		responses := make(chan string, len(endpoints))
 
 		// Start a goroutine for each endpoint
 		for _, endpoint := range endpoints {
 			go proxyRequest(ctx, config.WhProxtSkipTLSVerifyUpstream, httpRequest, payload, endpoint, responses)
 		}
 
-		// Wait for all goroutines to finish and collect the responses
+		// Collect responses with a timeout to avoid goroutine leaks on slow endpoints.
+		timeout := time.After(30 * time.Second)
 		for i := 0; i < len(endpoints); i++ {
-			result := <-responses
-			results <- result
+			select {
+			case <-responses:
+				// response collected
+			case <-timeout:
+				log.Warnf("Timed out waiting for %d/%d webhook proxy responses", len(endpoints)-i, len(endpoints))
+				return
+			}
 		}
-
-		close(responses)
-		close(results)
 	}
 }
