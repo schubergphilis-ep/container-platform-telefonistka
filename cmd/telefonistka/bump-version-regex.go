@@ -6,11 +6,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/commercetools/telefonistka/internal/pkg/githubapi"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
+	"github.com/schubergphilis/container-platform-telefonistka/internal/pkg/githubapi"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -66,9 +66,12 @@ func bumpVersionRegex(targetRepo string, targetFile string, regex string, replac
 	ghPrClientDetails.Ctx = ctx
 	ghPrClientDetails.Owner = strings.Split(targetRepo, "/")[0]
 	ghPrClientDetails.Repo = strings.Split(targetRepo, "/")[1]
-	ghPrClientDetails.PrLogger = log.WithFields(log.Fields{}) // TODO what fields should be here?
+	ghPrClientDetails.PrLogger = log.WithFields(log.Fields{"command": "bump-version-regex"})
 
-	r := regexp.MustCompile(regex)
+	r, err := regexp.Compile(regex)
+	if err != nil {
+		log.Fatalf("Invalid --regex-string %q: %v", regex, err)
+	}
 	defaultBranch, _ := ghPrClientDetails.GetDefaultBranch()
 
 	initialFileContent, _, err := githubapi.GetFileContent(ghPrClientDetails, defaultBranch, targetFile)

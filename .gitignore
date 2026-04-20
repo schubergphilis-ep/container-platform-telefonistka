@@ -1,2 +1,9 @@
 /telefonistka
 vendor/
+
+# Secrets and credentials — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key

@@ -14,16 +14,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/argoproj/argo-cd/v2/applicationset/utils"
-	cmdutil "github.com/argoproj/argo-cd/v2/cmd/util"
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient"
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
-	applicationsetpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/applicationset"
-	projectpkg "github.com/argoproj/argo-cd/v2/pkg/apiclient/project"
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient/settings"
-	argoappv1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
-	argodiff "github.com/argoproj/argo-cd/v2/util/argo/diff"
-	"github.com/argoproj/argo-cd/v2/util/argo/normalizers"
+	"github.com/argoproj/argo-cd/v3/applicationset/utils"
+	cmdutil "github.com/argoproj/argo-cd/v3/cmd/util"
+	"github.com/argoproj/argo-cd/v3/pkg/apiclient"
+	"github.com/argoproj/argo-cd/v3/pkg/apiclient/application"
+	applicationsetpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/applicationset"
+	projectpkg "github.com/argoproj/argo-cd/v3/pkg/apiclient/project"
+	"github.com/argoproj/argo-cd/v3/pkg/apiclient/settings"
+	argoappv1 "github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	argodiff "github.com/argoproj/argo-cd/v3/util/argo/diff"
+	"github.com/argoproj/argo-cd/v3/util/argo/normalizers"
 	"github.com/argoproj/gitops-engine/pkg/sync/hook"
 	"github.com/gonvenience/ytbx"
 	"github.com/homeport/dyff/pkg/dyff"
@@ -170,12 +170,22 @@ func diffLiveVsTargetObject(live, target *unstructured.Unstructured) (string, er
 	var targetNode yaml3.Node
 
 	//  unstructured.Unstructured > Byte
-	marsheledLive, _ := live.MarshalJSON()
-	marsheledTarget, _ := target.MarshalJSON()
+	marsheledLive, err := live.MarshalJSON()
+	if err != nil {
+		log.Warnf("Failed to marshal live state: %v", err)
+	}
+	marsheledTarget, err := target.MarshalJSON()
+	if err != nil {
+		log.Warnf("Failed to marshal target state: %v", err)
+	}
 
 	// Byte > YAML3
-	_ = yaml3.Unmarshal(marsheledLive, &liveNode)
-	_ = yaml3.Unmarshal(marsheledTarget, &targetNode)
+	if err := yaml3.Unmarshal(marsheledLive, &liveNode); err != nil {
+		log.Warnf("Failed to unmarshal live state to YAML: %v", err)
+	}
+	if err := yaml3.Unmarshal(marsheledTarget, &targetNode); err != nil {
+		log.Warnf("Failed to unmarshal target state to YAML: %v", err)
+	}
 
 	liveIf := ytbx.InputFile{
 		Location: "live",
@@ -237,6 +247,15 @@ func getEnv(key, fallback string) string {
 func CreateArgoCdClients() (ac argoCdClients, err error) {
 	plaintext, _ := strconv.ParseBool(getEnv("ARGOCD_PLAINTEXT", "false"))
 	insecure, _ := strconv.ParseBool(getEnv("ARGOCD_INSECURE", "false"))
+
+	if insecure {
+		log.Warn("ARGOCD_INSECURE=true: TLS certificate verification is disabled for ArgoCD. " +
+			"This is NOT safe for production — it allows man-in-the-middle attacks.")
+	}
+	if plaintext {
+		log.Warn("ARGOCD_PLAINTEXT=true: ArgoCD connection is unencrypted. " +
+			"Auth tokens will be sent in plaintext. This is NOT safe for production.")
+	}
 
 	opts := &apiclient.ClientOptions{
 		ServerAddr: getEnv("ARGOCD_SERVER_ADDR", "localhost:8080"),

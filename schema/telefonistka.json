@@ -86,9 +86,16 @@
         "$ref": "#/definitions/path"
       }
     },
+    "promotionPRLabels": {
+      "type": "array",
+      "description": "List of labels to apply on promotion PRs/MRs",
+      "items": {
+        "type": "string"
+      }
+    },
     "promtionPRlables": {
       "type": "array",
-      "description": "List of labels to apply on PR",
+      "description": "DEPRECATED: use promotionPRLabels instead (kept for backward compatibility)",
       "items": {
         "type": "string"
       }

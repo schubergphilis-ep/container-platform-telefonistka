@@ -20,7 +20,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient/session"
+	"github.com/argoproj/argo-cd/v3/pkg/apiclient/session"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/google/go-github/v62/github"
 	"github.com/gorilla/websocket"
@@ -463,7 +463,7 @@ func forwardData(t *testing.T, ctx context.Context, fwd, wsURL string) {
 			} else if err != nil {
 				checkErr(t, err)
 			}
-			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, fwd, bytes.NewReader(v.Body))
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, fwd, bytes.NewReader(v.Body))
 			req.Header = v.Header
 
 			// TODO: figure out how to handle properly

@@ -1,0 +1,6 @@
+# Trivy vulnerability ignore file
+# https://aquasecurity.github.io/trivy/latest/docs/configuration/filtering/#trivyignore
+
+# github.com/docker/cli: fix requires v29+ which breaks oras.land/oras-go pulled in by argo-cd.
+# Track: https://github.com/argoproj/argo-cd/issues for upstream fix.
+GHSA-p436-gjf2-799p

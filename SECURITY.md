@@ -14,7 +14,7 @@ Telefonistka seriously.  Thank you for improving the security of
 Telefonistka. We appreciate your efforts and responsible disclosure and
 will make every effort to acknowledge your contributions.
 
-Report security bugs by emailing `OpenSource@wayfair.com`.
+Report security bugs by emailing `security@schubergphilis.com`.
 
 The lead maintainer will acknowledge your email within 48 hours, and will send a
 more detailed response within 48 hours indicating the next steps in handling

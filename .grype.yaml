@@ -1,0 +1,5 @@
+ignore:
+  # docker/cli v29+ breaks oras.land/oras-go which is pulled in by argo-cd.
+  # This cannot be upgraded until argo-cd updates its docker dependency tree.
+  - vulnerability: GHSA-p436-gjf2-799p
+    reason: "blocked by argo-cd transitive dependency on oras.land/oras-go; track https://github.com/argoproj/argo-cd/issues for upstream fix"

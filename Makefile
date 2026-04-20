@@ -3,8 +3,7 @@
 #
 # Simple makefile to build binary.
 #
-# @author Kubernetes Team <k8s_team@wayfair.com>
-# @copyright 2019 Wayfair, LLC. -- All rights reserved.
+# @copyright 2023 Wayfair Tech – Incubator, 2025 Schuberg Philis
 
 VENDOR_DIR = vendor
 

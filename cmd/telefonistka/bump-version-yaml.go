@@ -6,12 +6,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/commercetools/telefonistka/internal/pkg/githubapi"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/hexops/gotextdiff"
 	"github.com/hexops/gotextdiff/myers"
 	"github.com/hexops/gotextdiff/span"
 	"github.com/mikefarah/yq/v4/pkg/yqlib"
+	"github.com/schubergphilis/container-platform-telefonistka/internal/pkg/githubapi"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -70,7 +70,7 @@ func bumpVersionYaml(targetRepo string, targetFile string, address string, value
 	ghPrClientDetails.Ctx = ctx
 	ghPrClientDetails.Owner = strings.Split(targetRepo, "/")[0]
 	ghPrClientDetails.Repo = strings.Split(targetRepo, "/")[1]
-	ghPrClientDetails.PrLogger = log.WithFields(log.Fields{}) // TODO what fields should be here?
+	ghPrClientDetails.PrLogger = log.WithFields(log.Fields{"command": "bump-version-yaml"})
 
 	defaultBranch, _ := ghPrClientDetails.GetDefaultBranch()
 

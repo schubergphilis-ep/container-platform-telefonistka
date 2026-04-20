@@ -40,7 +40,7 @@ type GhClientPair struct {
 func getAppInstallationId(githubAppPrivateKeyPath string, githubAppId int64, githubRestAltURL string, ctx context.Context, owner string) (int64, error) {
 	atr, err := ghinstallation.NewAppsTransportKeyFromFile(http.DefaultTransport, githubAppId, githubAppPrivateKeyPath)
 	if err != nil {
-		panic(err)
+		return 0, fmt.Errorf("failed to create GitHub App transport from key file %q: %w", githubAppPrivateKeyPath, err)
 	}
 	tempClient := github.NewClient(
 		&http.Client{

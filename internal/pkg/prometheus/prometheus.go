@@ -43,7 +43,7 @@ var (
 		Help:      "The total number of Github API operations",
 		Namespace: "telefonistka",
 		Subsystem: "github",
-	}, []string{"api_group", "api_path", "repo_slug", "status", "method"})
+	}, []string{"api_group", "repo_slug", "status", "method"})
 
 	ghOpenPrsGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name:      "open_prs",
@@ -66,9 +66,11 @@ var (
 		Subsystem: "github",
 	}, []string{"repo_slug"})
 
+	// Deprecated: use providerCommitStatusUpdates instead. Kept for backward compatibility
+	// with existing GitHub-only dashboards.
 	commitStatusUpdates = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name:      "commit_status_updates_total",
-		Help:      "The total number of commit status updates, and their status (success/pending/failure)",
+		Help:      "DEPRECATED: use telefonistka_provider_commit_status_updates_total instead",
 		Namespace: "telefonistka",
 		Subsystem: "github",
 	}, []string{"repo_slug", "status"})
@@ -78,7 +80,34 @@ var (
 		Help:      "The total number of requests forwarded upstream servers",
 		Namespace: "telefonistka",
 		Subsystem: "webhook_proxy",
-	}, []string{"status", "method", "url"})
+	}, []string{"status", "method", "host"})
+
+	// Provider-agnostic metrics (covers both GitHub and GitLab)
+	webhookEventsByProviderVec = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name:      "webhook_events_total",
+		Help:      "Total webhook events received, by provider and result",
+		Namespace: "telefonistka",
+	}, []string{"provider", "event_type", "result"})
+
+	promotionOutcomesVec = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name:      "promotions_total",
+		Help:      "Total promotion operations, by provider and outcome",
+		Namespace: "telefonistka",
+	}, []string{"provider", "status"})
+
+	eventProcessingDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:      "event_processing_duration_seconds",
+		Help:      "Time spent processing webhook events",
+		Namespace: "telefonistka",
+		Buckets:   prometheus.ExponentialBuckets(0.1, 2, 10), // 0.1s to ~51.2s
+	}, []string{"provider", "event_type"})
+
+	providerCommitStatusUpdates = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name:      "commit_status_updates_total",
+		Help:      "Commit status updates by provider",
+		Namespace: "telefonistka",
+		Subsystem: "provider",
+	}, []string{"provider", "repo_slug", "status"})
 )
 
 func IncCommitStatusUpdateCounter(repoSlug string, status string) {
@@ -115,28 +144,19 @@ func InstrumentGhCall(resp *github.Response) prometheus.Labels {
 	} else {
 		relevantRequestPathSlice = requestPathSlice[1:]
 	}
-	var apiPath string
 	var repoSlug string
 	var repoOwner string
 
-	if len(relevantRequestPathSlice) < 4 {
-		apiPath = ""
-		if len(relevantRequestPathSlice) < 3 {
-			repoSlug = ""
-			repoOwner = ""
-		} else {
-			repoSlug = strings.Join(relevantRequestPathSlice[1:3], "/")
-			repoOwner = relevantRequestPathSlice[1]
-		}
+	if len(relevantRequestPathSlice) < 3 {
+		repoSlug = ""
+		repoOwner = ""
 	} else {
-		apiPath = relevantRequestPathSlice[3]
 		repoSlug = strings.Join(relevantRequestPathSlice[1:3], "/")
 		repoOwner = relevantRequestPathSlice[1]
 	}
 
 	labels := prometheus.Labels{
 		"api_group": relevantRequestPathSlice[0],
-		"api_path":  apiPath,
 		"repo_slug": repoSlug,
 		"method":    resp.Request.Method,
 		"status":    strconv.Itoa(resp.StatusCode),
@@ -154,6 +174,39 @@ func InstrumentGhCall(resp *github.Response) prometheus.Labels {
 	return labels
 }
 
+// InstrumentWebhookEvent records a webhook event for any provider
+func InstrumentWebhookEvent(provider, eventType, result string) {
+	webhookEventsByProviderVec.With(prometheus.Labels{
+		"provider":   provider,
+		"event_type": eventType,
+		"result":     result,
+	}).Inc()
+}
+
+// InstrumentPromotionOutcome records a promotion outcome for any provider
+func InstrumentPromotionOutcome(provider, status string) {
+	promotionOutcomesVec.With(prometheus.Labels{
+		"provider": provider,
+		"status":   status,
+	}).Inc()
+}
+
+// ObserveEventProcessingDuration records the duration of event processing
+func ObserveEventProcessingDuration(provider, eventType string, durationSeconds float64) {
+	eventProcessingDuration.With(prometheus.Labels{
+		"provider":   provider,
+		"event_type": eventType,
+	}).Observe(durationSeconds)
+}
+
+func IncProviderCommitStatusCounter(provider, repoSlug, status string) {
+	providerCommitStatusUpdates.With(prometheus.Labels{
+		"provider":  provider,
+		"repo_slug": repoSlug,
+		"status":    status,
+	}).Inc()
+}
+
 // This function instrument upstream webhooks for the WH forwarding/multiplexing feature
 func InstrumentProxyUpstreamRequest(resp *http.Response) prometheus.Labels {
 	if resp == nil {
@@ -163,7 +216,7 @@ func InstrumentProxyUpstreamRequest(resp *http.Response) prometheus.Labels {
 	labels := prometheus.Labels{
 		"method": resp.Request.Method,
 		"status": strconv.Itoa(resp.StatusCode),
-		"url":    resp.Request.URL.String(),
+		"host":   resp.Request.URL.Host,
 	}
 	whUpstreamRequestsCountVec.With(labels).Inc()
 	return labels

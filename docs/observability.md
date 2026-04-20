@@ -50,3 +50,21 @@ telefonistka_github_open_prs{repo_slug="foo/bar2"} 21
 telefonistka_github_open_prs_with_pending_telefonistka_checks{repo_slug="foo/bar1"} 0
 telefonistka_github_open_prs_with_pending_telefonistka_checks{repo_slug="foo/bar2"} 0
 ```
+
+### Provider-agnostic metrics (GitHub and GitLab)
+
+|name|type|description|labels|
+|---|---|---|---|
+|telefonistka_webhook_events_total|counter|Total webhook events received|`provider`, `event_type`, `result`|
+|telefonistka_promotions_total|counter|Total promotion operations|`provider`, `status`|
+|telefonistka_event_processing_duration_seconds|histogram|Time spent processing webhook events|`provider`, `event_type`|
+|telefonistka_provider_commit_status_updates_total|counter|Commit status updates by provider|`provider`, `repo_slug`, `status`|
+
+### Endpoints
+
+| Path | Description |
+|---|---|
+| `/metrics` | Prometheus metrics |
+| `/live` | Liveness probe (always 200 if server is running) |
+| `/ready` | Readiness probe (200 if server can accept webhooks) |
+| `/webhook` | Webhook receiver (GitHub and GitLab) |

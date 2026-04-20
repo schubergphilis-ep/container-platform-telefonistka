@@ -1,24 +1,10 @@
 name: Docker
 
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
-
 on:
-  # push:
-    # branches: [ "main" ]
-    # Publish semver tags as releases.
-    # tags: [ 'v*.*.*' ]
   release:
     types: [published]
   pull_request:
-    branches: [ "main" ]
-
-env:
-  DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
-  IMAGE_NAME: ${{ vars.IMAGE_NAME }}
-  REGISTRY: ${{ vars.REGISTRY }}
+    branches: ["main"]
 
 jobs:
   build:
@@ -28,8 +14,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      # This is used to complete the identity challenge
-      # with sigstore/fulcio when running outside of PRs.
       id-token: write
 
     steps:
@@ -64,100 +48,39 @@ jobs:
             ~/.cache/go-build
             ~/go/pkg/mod
 
-      # Install the cosign tool except on PR
-      # https://github.com/sigstore/cosign-installer
-      # TODO enable once the repo goes public
-      # - name: Install cosign
-        # if: github.event_name != 'pull_request'
-        # uses: sigstore/cosign-installer@f3c664df7af409cb4873aa5068053ba9d61a57b6 #v2.6.0
-        # with:
-          # cosign-release: 'v1.11.0'
-
-
-      # Workaround: https://github.com/docker/build-push-action/issues/461
-      - name: Setup Docker buildx
-        uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5
-
-      # Login against a Docker registry except on PR
-      # https://github.com/docker/login-action
-      - name: Log into GH registry (ghcr.io)
-        if: github.event_name != 'pull_request'  
-        uses: docker/login-action@7ca345011ac4304463197fac0e56eab1bc7e6af0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Log into Docker Hub registry 
-        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != ''
-        uses: docker/login-action@7ca345011ac4304463197fac0e56eab1bc7e6af0
-        with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Extract metadata (tags, labels) for Docker
-      # https://github.com/docker/metadata-action
-      # 1st image name is for GH package repo
-      # 2nd image name is for DockerHub image
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@906ecf0fc0a80f9110f79d9e6c04b1080f4a2621
-        with: 
-          images: |
-            ${{ env.REGISTRY != '' && env.REGISTRY  || 'ghcr.io' }}/${{ env.IMAGE_NAME != '' && env.IMAGE_NAME || 'commercetools/telefonistka'}}
-
-
-      # Build and push Docker image with Buildx (don't push on PR)
-      # https://github.com/docker/build-push-action
+      #
+      # Build, scan and push the scratch (default) image.
+      #
       - name: Build and push Docker image
-        id: build-and-push
-        uses: docker/build-push-action@7e094594beda23fc8f21fa31049f4b203e51096b
+        uses: schubergphilis/mcvs-docker-action@v0.11.0
         with:
-          context: .
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          images: docker.io/schubergphilis/container-platform-telefonistka
+          push-to-container-registry: ${{ github.event_name != 'pull_request' && 'dockerhub' || '' }}
+          dockerhub-username: schubergphilis
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-    # Extract metadata (tags, labels) for Docker
-    # https://github.com/docker/metadata-action
-    # 1st image name is for GH package repo
-    # 2nd image name is for DockerHub image
-      - name: Extract Docker metadata - alpine
+      #
+      # Build, scan and push the alpine image.
+      # mcvs-docker-action does not support Dockerfile --target, so we build
+      # the alpine variant manually after the action has run its checks.
+      #
+      - name: Extract Docker metadata (alpine)
+        if: github.event_name != 'pull_request'
         id: meta-alpine
-        uses: docker/metadata-action@906ecf0fc0a80f9110f79d9e6c04b1080f4a2621
+        uses: docker/metadata-action@v5.10.0
         with:
-          images: |
-            ${{ env.REGISTRY != '' && env.REGISTRY  || 'ghcr.io' }}/${{ env.IMAGE_NAME != '' && env.IMAGE_NAME || 'commercetools/telefonistka'}}
+          images: docker.io/schubergphilis/container-platform-telefonistka
           flavor: prefix=alpine-,onlatest=true
 
-      # Build and push Docker image with Buildx (don't push on PR)
-      # https://github.com/docker/build-push-action
-      - name: Build and push Docker image - alpine
-        id: build-and-push-alpine
-        uses: docker/build-push-action@7e094594beda23fc8f21fa31049f4b203e51096b
+      - name: Build and push Docker image (alpine)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6.19.2
         with:
           context: .
           target: alpine-release
-          push: ${{ github.event_name != 'pull_request' }}
+          push: true
           tags: ${{ steps.meta-alpine.outputs.tags }}
           labels: ${{ steps.meta-alpine.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-
-      # Sign the resulting Docker image digest except on PRs.
-      # This will only write to the public Rekor transparency log when the Docker
-      # repository is public to avoid leaking data.  If you would like to publish
-      # transparency data even for private images, pass --force to cosign below.
-      # https://github.com/sigstore/cosign
-      # TODO enable once the repo goes public
-      # - name: Sign the published Docker image
-        # if: ${{ github.event_name != 'pull_request' }}
-        # env:
-          # COSIGN_EXPERIMENTAL: "true"
-        # This step uses the identity token to provision an ephemeral certificate
-        # against the sigstore community Fulcio instance.
-        # run: echo "${{ steps.meta.outputs.tags }}" | xargs -I {} cosign sign {}@${{ steps.build-and-push.outputs.digest }}
-

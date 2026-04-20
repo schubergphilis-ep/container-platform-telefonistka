@@ -14,7 +14,6 @@ func TestUserGetUrl(t *testing.T) {
 	t.Parallel()
 	expectedLabels := prometheus.Labels{
 		"api_group": "user",
-		"api_path":  "",
 		"repo_slug": "",
 		"status":    "404",
 		"method":    "GET",
@@ -26,7 +25,6 @@ func TestRepoGetUrl(t *testing.T) {
 	t.Parallel()
 	expectedLabels := prometheus.Labels{
 		"api_group": "repos",
-		"api_path":  "",
 		"repo_slug": "shared/k8s-helmfile",
 		"status":    "404",
 		"method":    "GET",
@@ -38,7 +36,6 @@ func TestContentUrl(t *testing.T) {
 	t.Parallel()
 	expectedLabels := prometheus.Labels{
 		"api_group": "repos",
-		"api_path":  "contents",
 		"repo_slug": "shared/k8s-helmfile",
 		"status":    "404",
 		"method":    "GET",
@@ -50,7 +47,6 @@ func TestPullUrl(t *testing.T) {
 	t.Parallel()
 	expectedLabels := prometheus.Labels{
 		"api_group": "repos",
-		"api_path":  "pulls",
 		"repo_slug": "AnOwner/Arepo",
 		"status":    "404",
 		"method":    "GET",
@@ -62,7 +58,6 @@ func TestShortUrl(t *testing.T) {
 	t.Parallel()
 	expectedLabels := prometheus.Labels{
 		"api_group": "repos",
-		"api_path":  "contents",
 		"repo_slug": "AnOwner/Arepo",
 		"status":    "404",
 		"method":    "GET",
@@ -74,7 +69,6 @@ func TestApiUrl(t *testing.T) {
 	t.Parallel()
 	expectedLabels := prometheus.Labels{
 		"api_group": "repos",
-		"api_path":  "contents",
 		"repo_slug": "AnOwner/Arepo",
 		"status":    "404",
 		"method":    "GET",
@@ -100,7 +94,7 @@ func TestInstrumentProxyUpstreamRequestLables(t *testing.T) {
 	expectedLabels := prometheus.Labels{
 		"status": "200",
 		"method": "POST",
-		"url":    "https://argocd.example.com/webhook",
+		"host":   "argocd.example.com",
 	}
 	labels := InstrumentProxyUpstreamRequest(httpResp)
 	if diff := deep.Equal(expectedLabels, labels); diff != nil {
